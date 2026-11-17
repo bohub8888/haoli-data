@@ -1,0 +1,80 @@
+name: 官方公告每日核对
+
+# 对标 holiday-cn 的 schedule CI：每天都跑，但只有真出现差异才红灯。
+# 蚝历更保守——脚本只读不写源表，采纳变化必须人工核源后提 PR。
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "observances.py"
+      - "cn_official.py"
+      - "curated.py"
+      - "taxonomy.py"
+      - "check_official_notice.py"
+      - "test_*.py"
+      - ".github/workflows/audit.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notice-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 解析器与构建状态单测
+        run: python -m unittest test_official_notice test_build_state -v
+
+      - name: 离线核对（用仓库内的官方公告原文缓存）
+        run: python check_official_notice.py --offline
+
+      - name: 在线核对（抓中国政府网；抓不到自动回落缓存，不误报）
+        run: python check_official_notice.py
+
+      - name: 产物自检：manifest 的 sha256 必须与每份数据逐字一致
+        run: |
+          python -c "
+          import json, hashlib, os, sys
+          m = json.load(open('data/manifest.json', encoding='utf-8'))
+          bad = []
+          for key, e in m['files'].items():
+              p = os.path.join('data', e['f'])
+              if not os.path.exists(p):
+                  bad.append(key + ': missing ' + p); continue
+              h = hashlib.sha256(open(p, 'rb').read()).hexdigest()
+              if h != e['sha256']:
+                  bad.append(key + ': sha mismatch')
+          print('manifest 校验:', 'OK (' + str(len(m['files'])) + ' files)' if not bad else bad)
+          for y in (2026, 2027):
+              d = json.load(open('data/all-%d.json' % y, encoding='utf-8'))
+              print(y, 'v=', d['v'], 'days=', len(d['days']), 'notes=', len(d.get('notes', {})))
+          sys.exit(1 if bad else 0)
+          "
+
+      - name: 每年 11 月起盯次年公告
+        run: |
+          python -c "
+          import datetime as dt, json, sys
+          r = json.load(open('data/official-notice-report.json', encoding='utf-8'))
+          n = r['next_year']
+          print('次年', n['year'], '数据已在库:', n['data_present'], '|', n['action'])
+          sys.exit(1 if n['urgent'] else 0)
+          "
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-notice-report
+          path: data/official-notice-report.json
