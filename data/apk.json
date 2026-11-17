@@ -1,10 +1,10 @@
 {
-  "version": "1.68",
-  "versionCode": 68,
-  "size": 1464719,
-  "sha256": "1dc9a2edee382cdb29268a4228dcc37a5c1348216c041d989fb64013cdb09218",
-  "url": "https://haoli.example.com/download/haoli-1.68.apk",
-  "mirror": "https://cdn.jsdelivr.net/gh/OWNER/REPO@main/download/haoli-1.68.apk",
+  "version": "1.69",
+  "versionCode": 69,
+  "size": 1466167,
+  "sha256": "483ce8c59fe721e923beb2c31254122c25c1f138c931759897cb5f869274ac9a",
+  "url": "https://haoli.example.com/download/haoli-1.69.apk",
+  "mirror": "https://cdn.jsdelivr.net/gh/OWNER/REPO@main/download/haoli-1.69.apk",
   "pgyer": "https://www.pgyer.com/APP_KEY",
-  "notes": "正式域名上线（域名已脱敏）：App 数据 / 订阅 / 下载全部切到新地址，裸 IP 与 jsDelivr 继续兜底；数据版本 2026.12 / 2027.12，每年 849 条。"
+  "notes": "App 新增一键清除已导入日历（精确匹配本 App 节点，不误删私人日历与订阅）；数据版本 2026.12 / 2027.12，每年 849 条。域名与分发地址已脱敏。"
 }
