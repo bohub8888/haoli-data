@@ -365,6 +365,7 @@ def rebuild_and_verify() -> bool:
         rr = run(f'"{PY}" {script}', check=False)
         log(f"  {script}: {'OK' if rr.returncode == 0 else 'FAIL'}")
         if rr.returncode != 0:
+            log(f"    报错详情: {(rr.stdout or '')[-800:]} {(rr.stderr or '')[-400:]}")
             return False
     return True
 
