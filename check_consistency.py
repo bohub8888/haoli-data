@@ -36,6 +36,9 @@ import sys
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
 APK_DATA = os.path.join(ROOT, "haoli-apk", "app", "src", "main", "assets", "data")
+# 数据仓 CI 环境只有本仓、不含 haoli-apk 工程（本流水线明确不发 APK）。
+# APK 内置数据一致性属发 APK 时的本地校验；无 APK 目录时跳过，避免误判为不一致。
+HAS_APK = os.path.isdir(APK_DATA)
 
 sys.path.insert(0, BASE)
 import observances as obs  # noqa: E402
@@ -137,6 +140,8 @@ def check_table_vs_global(y: int, glob: list[dict]) -> None:
 
 
 def check_china_vs_apk(y: int, china: list[dict]) -> None:
+    if not HAS_APK:
+        return   # 数据仓 CI 无 APK 工程，跳过（发 APK 的本地环境仍严格校验）
     path = os.path.join(APK_DATA, f"cn-{y}.json")
     if not os.path.exists(path):
         bad(f"[{y}] 缺 Apk 数据 {path}")
@@ -176,6 +181,8 @@ def check_global_contains_china(y: int, glob: list[dict], china: list[dict]) -> 
 
 def check_algo_years(years=(2028, 2029, 2030)) -> None:
     """2028 年起没有国务院公告，Apk 只用算法数据；源表照样要全部落地。"""
+    if not HAS_APK:
+        return   # 数据仓 CI 无 APK 工程，跳过（发 APK 的本地环境仍严格校验）
     import cnlunar  # 局部导入：只有这条检查需要
 
     for y in years:
