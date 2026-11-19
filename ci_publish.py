@@ -36,9 +36,13 @@ DENY_EXACT = {"apk.json", "index.html"}
 
 
 def token() -> str:
-    t = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    # GITHUB_TOKEN 作用域仅限当前仓（haoli-data），无权写 haoli-site（跨仓 → 403）。
+    # 跨仓写用 PAT：HAOLI_SITE_TOKEN（对 haoli-site 有 push 权限）。
+    t = (os.environ.get("HAOLI_SITE_TOKEN")
+         or os.environ.get("GITHUB_TOKEN")
+         or os.environ.get("GH_TOKEN"))
     if not t:
-        raise SystemExit("缺 GITHUB_TOKEN")
+        raise SystemExit("缺 HAOLI_SITE_TOKEN / GITHUB_TOKEN")
     return t
 
 
