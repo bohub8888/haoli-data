@@ -3,3 +3,10 @@ __pycache__/
 .auto_update_changed
 cn_official.py.autobak
 .secrets/
+# build.py 生成的站点副产物（data 仓只存数据+脚本，站点文件在 haoli-site 仓）
+/index.html
+/robots.txt
+/sitemap.xml
+/2026/index.html
+/2027/index.html
+/data/build-state.json

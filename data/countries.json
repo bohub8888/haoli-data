@@ -494,23 +494,6 @@
           "count": 33
         }
       ]
-    },
-    {
-      "title": "专题",
-      "items": [
-        {
-          "slug": "religion",
-          "zh": "全球宗教节日",
-          "note": "开斋节 · 宰牲节 · 复活节 · 佛诞",
-          "count": 15
-        },
-        {
-          "slug": "world-events",
-          "zh": "天象与赛事",
-          "note": "日食 · 月食 · 流星雨 · 大赛",
-          "count": 9
-        }
-      ]
     }
   ]
 }
