@@ -12,4 +12,7 @@ cn_official.py.autobak
 /data/build-state.json
 /data/conference-watch-cache/
 /data/conference-watch-report.json
+/data/discovery-cache/
+/data/discovered-holidays-report.json
+# discovery-seen.json 是跨 CI 运行的已见基线，必须进版本库，勿 ignore
 conferences.py.autobak

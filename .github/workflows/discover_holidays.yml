@@ -1,0 +1,72 @@
+name: 节日自动发现（UN官方列表 + 官媒通稿）
+
+# 目标：每天自动从权威源发现「尚未纳入」的节日候选，补上此前只有人工策展、
+# 没有主动发现的缺口。用户 2026-11-19 定档：官媒通稿也纳入发现通道。
+# 发现模块只产出候选报告，不直接改源表——节日入库要写 A/B 级来源与
+# public/note 编者文字，维持人工策展闸门，避免机器误入库。
+# 每天 12:50（北京）跑一次，错开 audit(12:00)、放假(12:30)、会议(12:40)。
+on:
+  schedule:
+    - cron: "50 4 * * *"   # 每天 12:50 北京时间
+  workflow_dispatch:        # 手动触发（调试用）
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-update         # 与其他写/扫任务共用组，避免并发
+  cancel-in-progress: false
+
+jobs:
+  discover-holidays:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 解析器单测
+        run: python -m unittest test_discover_days_auto -v
+
+      - name: 每天自动发现
+        id: discover
+        run: |
+          python discover_days_auto.py
+          python - <<'PY'
+          import json, os
+          r = json.load(open("data/discovered-holidays-report.json", encoding="utf-8"))
+          n = r.get("candidate_count", 0)
+          ready = [c for c in r.get("candidates", []) if c.get("status") == "待核源入库"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"count={n}\n")
+              f.write(f"ready={len(ready)}\n")
+          if ready:
+              for c in ready:
+                  print(f"::notice::发现新节日候选（待核源）：{c.get('mmdd')} "
+                        f"{c.get('name_zh') or c.get('name_en')} · {c.get('resolution','')}")
+          else:
+              print("::notice::本次无新节日候选（已入库的不重复报，拿不准的静默放弃）")
+          PY
+
+      - name: 提交已见基线（仅 UN 列表新增时才会变化）
+        run: |
+          git config user.name "haoli-ci"
+          git config user.email "haoli-ci@users.noreply.github.com"
+          git add data/discovery-seen.json
+          if ! git diff --cached --quiet; then
+            git commit -m "auto: 节日发现基线更新（UN 新增候选）· $(date +%F)"
+            git push origin main
+          else
+            echo "基线无变化，不提交（候选报告为本地产物，不入库）"
+          fi
