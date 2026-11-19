@@ -75,6 +75,7 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAOLI_SITE_TOKEN: ${{ secrets.HAOLI_SITE_TOKEN }}
           HAOLI_DEPLOY_KEY_FILE: ${{ env.HAOLI_DEPLOY_KEY_FILE }}
         run: |
           FILES=$(git diff --name-only -- data ics 2026 2027 stats.json sitemap.xml robots.txt \
