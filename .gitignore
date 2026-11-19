@@ -10,3 +10,6 @@ cn_official.py.autobak
 /2026/index.html
 /2027/index.html
 /data/build-state.json
+/data/conference-watch-cache/
+/data/conference-watch-report.json
+conferences.py.autobak

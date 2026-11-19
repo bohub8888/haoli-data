@@ -1,0 +1,99 @@
+name: 会议日期全自动核对与分发
+
+# 目标：官网挂出重要会议的确切日期后，自动核对入库并全端分发，零用户参与。
+# 只读官网 JSON-LD Event 结构化日期；拿不准静默放弃；不误入库优先于覆盖率。
+# 每月 1 日 12:40（北京）跑一次，错开 audit(12:00) 与放假更新(12:30)。
+on:
+  schedule:
+    - cron: "40 4 1 * *"   # 每月 1 日 12:40 北京时间
+  workflow_dispatch:        # 手动触发（调试用）
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-update         # 与放假更新共用组，避免两个写源表的任务并发
+  cancel-in-progress: false
+
+jobs:
+  watch-conferences:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SITE: https://oyster111.top
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 解析器单测
+        run: python -m unittest test_watch_auto -v
+
+      - name: 还原受限 SSH 私钥
+        env:
+          HAOLI_DEPLOY_KEY: ${{ secrets.HAOLI_DEPLOY_KEY }}
+        run: |
+          if [ -n "$HAOLI_DEPLOY_KEY" ]; then
+            printf '%s\n' "$HAOLI_DEPLOY_KEY" > "$RUNNER_TEMP/haoli_deploy_key"
+            chmod 600 "$RUNNER_TEMP/haoli_deploy_key"
+            echo "HAOLI_DEPLOY_KEY_FILE=$RUNNER_TEMP/haoli_deploy_key" >> "$GITHUB_ENV"
+          else
+            echo "::warning::HAOLI_DEPLOY_KEY 未配置，将跳过服务器同步"
+          fi
+
+      - name: 核对 → 核源 → 入库 → 重建 → 校验
+        id: update
+        run: |
+          set +e
+          python watch_auto.py
+          CODE=$?
+          set -e
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          # 0=无变化或成功；2=闸门未过已回滚；1=系统错误
+          if [ "$CODE" -eq 1 ]; then
+            echo "::error::会议更新遇到系统错误（构建/校验失败），源表已回滚"
+            exit 1
+          fi
+          if [ -f .auto_update_changed ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 分发到 haoli-site 仓 + 服务器 + CDN
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAOLI_DEPLOY_KEY_FILE: ${{ env.HAOLI_DEPLOY_KEY_FILE }}
+        run: |
+          FILES=$(git diff --name-only -- data ics 2026 2027 stats.json sitemap.xml robots.txt \
+                  | grep -vE 'apk.json|build-state.json|official-notice-report.json|official-notices/|conference-watch-' \
+                  | paste -sd, -)
+          echo "变化文件: $FILES"
+          if [ -n "$FILES" ]; then
+            python ci_publish.py --files "$FILES"
+          fi
+
+      - name: 提交源表与数据变化
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "haoli-ci"
+          git config user.email "haoli-ci@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "auto: 会议官网定档更新（全端一致，不发 APK）· $(date +%F)"
+            git push origin main
+          fi
+
+      - name: 留痕（无变化或放弃）
+        if: steps.update.outputs.changed != 'true'
+        run: echo "本次无新定档 / 已按红线静默放弃，未改动任何文件。"
