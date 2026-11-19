@@ -1,13 +1,13 @@
 {
-  "checked_at": "2026-11-16T13:02:45+08:00",
-  "today": "2026-11-16",
+  "checked_at": "2026-11-19T10:02:04+08:00",
+  "today": "2026-11-19",
   "offline": false,
   "years": [
     {
       "year": 2026,
       "source": "官方原文（已抓）",
       "notice_url": "https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm",
-      "fetched_at": "2026-11-16T13:02:45+08:00",
+      "fetched_at": "2026-11-19T10:02:03+08:00",
       "off_days_official": 33,
       "off_days_local": 33,
       "work_days_official": 6,
@@ -115,9 +115,9 @@
     },
     {
       "year": 2027,
-      "source": "本地缓存（用 --refresh 强制重抓）",
+      "source": "官方原文（已抓）",
       "notice_url": "https://www.gov.cn/zhengce/content/202611/content_7085101.htm",
-      "fetched_at": "2026-11-16T12:51:26+08:00",
+      "fetched_at": "2026-11-19T10:02:03+08:00",
       "off_days_official": 29,
       "off_days_local": 29,
       "work_days_official": 5,

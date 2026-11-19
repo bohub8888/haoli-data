@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.auto_update_changed
+cn_official.py.autobak
+.secrets/
