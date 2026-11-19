@@ -321,10 +321,19 @@ def main() -> int:
         with open(REPORT, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         log(f"候选报告已写入 {os.path.relpath(REPORT, HERE)}")
-        # 更新已见基线（只在成功抓取 UN 列表后写，避免抓取失败时空列表覆盖基线）
+        # 更新已见基线：只有英文名集合真的变化才写，避免每天因时间戳产生无意义 commit。
+        # 只在成功抓取 UN 列表后写，防止抓取失败时空列表覆盖基线。
         if raw_un_ok:
-            with open(SEEN, "w", encoding="utf-8") as f:
-                json.dump({"seen_en": sorted(seen), "updated_at": now}, f, ensure_ascii=False, indent=2)
+            try:
+                old_seen = set(json.load(open(SEEN, encoding="utf-8"))["seen_en"])
+            except Exception:
+                old_seen = set()
+            if seen != old_seen:
+                with open(SEEN, "w", encoding="utf-8") as f:
+                    json.dump({"seen_en": sorted(seen), "updated_at": now}, f, ensure_ascii=False, indent=2)
+                log(f"已见基线已更新（{len(old_seen)} → {len(seen)} 条）")
+            else:
+                log("已见基线无变化，不重写")
     else:
         log("dry-run：未写文件")
     return 0
