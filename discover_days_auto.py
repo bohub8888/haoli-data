@@ -179,12 +179,9 @@ def _known_names() -> set[str]:
         names |= {e["name"] for e in curated.ENTRIES}
     except Exception:
         pass
-    try:
-        sys.path.insert(0, os.path.join(HERE, "..", "holiday-calendar-deploy"))
-        import discovered_days
-        names |= {e["name"] for e in discovered_days.DISCOVERED}
-    except Exception:
-        pass
+    # 不依赖 deploy 仓的 discovered_days.py：那是故事页选题库（部分条目不在主日历库），
+    # 且 CI 的数据仓 checkout 里没有该目录。去重基准只认本仓的观测表 + 策展库，
+    # 保证 CI 与本地行为一致；故事页库里的中文名不会与 UN 英文候选相撞。
     return names
 
 
