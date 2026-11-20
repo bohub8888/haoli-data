@@ -100,6 +100,9 @@ jobs:
       - name: 微信通知（仅真入库时推送）
         if: steps.update.outputs.changed == 'true'
         env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
           SCT_SENDKEY: ${{ secrets.SCT_SENDKEY }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           TZ: Asia/Shanghai
