@@ -97,6 +97,13 @@ jobs:
             git push origin main
           fi
 
+      - name: 微信通知（仅真入库时推送）
+        if: steps.update.outputs.changed == 'true'
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          TZ: Asia/Shanghai
+        run: python notify_ingest.py --kind conference
+
       - name: 留痕（无变化或放弃）
         if: steps.update.outputs.changed != 'true'
         run: echo "本次无新定档 / 已按红线静默放弃，未改动任何文件。"
