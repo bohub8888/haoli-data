@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""入库通知器：真有数据入库后，把「入库了什么」推送到微信（PushPlus）。
+"""入库通知器：真有数据入库后，把「入库了什么」推送到微信。
+
+支持两个通道（任一配置即可，优先 Server酱）：
+  · Server酱 Turbo：环境变量 SCT_SENDKEY（微信扫码即得，免实名，免费 5 条/天）
+  · PushPlus：环境变量 PUSHPLUS_TOKEN（需实名认证才能发）
 
 设计红线：
   · 只在 CI 判定 changed=true、完成提交后调用；无变化 / 静默放弃时根本不会跑到本脚本。
-  · 推送令牌只从环境变量 PUSHPLUS_TOKEN 读，绝不写进仓库。
+  · 推送令牌只从环境变量读，绝不写进仓库。
   · 未配置令牌 / 网络失败一律静默退出 0，绝不阻断入库主流程、绝不刷屏。
   · 内容从本次 commit 的 diff 里提取真实新增条目，不编造、不概括。
 
@@ -23,10 +27,12 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PUSH_URL = "http://www.pushplus.plus/send"
+SCT_URL = "https://sctapi.ftqq.com/{key}.send"
 
 # 每种入库链路对应的源表文件与条目解析规则
 SPEC = {
@@ -113,25 +119,45 @@ def build_message(kind: str, entries: list[str], commit_subject: str) -> tuple[s
 
 
 def send(title: str, body: str) -> bool:
-    token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
-    if not token:
-        print("[notify] 未配置 PUSHPLUS_TOKEN，跳过推送（不影响入库）")
+    """优先 Server酱（免实名），其次 PushPlus；任一成功即返回 True。"""
+    sct = os.environ.get("SCT_SENDKEY", "").strip()
+    pushplus = os.environ.get("PUSHPLUS_TOKEN", "").strip()
+    if not sct and not pushplus:
+        print("[notify] 未配置 SCT_SENDKEY / PUSHPLUS_TOKEN，跳过推送（不影响入库）")
         return False
-    payload = json.dumps(
-        {"token": token, "title": title, "content": body, "template": "markdown"}
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        PUSH_URL, data=payload, headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            res = json.loads(r.read().decode("utf-8"))
-        ok = res.get("code") == 200
-        print(f"[notify] 推送结果：{res}")
-        return ok
-    except Exception as e:  # 网络抖动不阻断入库
-        print(f"[notify] 推送失败（已忽略，不影响入库）：{e}")
-        return False
+
+    ok_any = False
+    # Server酱 Turbo：form 编码 title/desp，返回 code==0 为成功
+    if sct:
+        data = urllib.parse.urlencode({"title": title, "desp": body}).encode("utf-8")
+        req = urllib.request.Request(
+            SCT_URL.format(key=sct), data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                res = json.loads(r.read().decode("utf-8"))
+            ok_any = res.get("code") == 0
+            print(f"[notify] Server酱结果：{res}")
+        except Exception as e:
+            print(f"[notify] Server酱推送失败（已忽略）：{e}")
+
+    # PushPlus：JSON，返回 code==200 为成功；未实名会返回 905，静默不影响入库
+    if pushplus and not ok_any:
+        payload = json.dumps(
+            {"token": pushplus, "title": title, "content": body, "template": "markdown"}
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            PUSH_URL, data=payload, headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                res = json.loads(r.read().decode("utf-8"))
+            ok_any = res.get("code") == 200
+            print(f"[notify] PushPlus结果：{res}")
+        except Exception as e:
+            print(f"[notify] PushPlus推送失败（已忽略）：{e}")
+    return ok_any
 
 
 def self_test() -> int:
