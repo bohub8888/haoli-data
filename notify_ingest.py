@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""入库通知器：真有数据入库后，把「入库了什么」推送到微信。
+"""入库通知器：真有数据入库后，把「入库了什么」推送通知。
 
-支持两个通道（任一配置即可，优先 Server酱）：
-  · Server酱 Turbo：环境变量 SCT_SENDKEY（微信扫码即得，免实名，免费 5 条/天）
-  · PushPlus：环境变量 PUSHPLUS_TOKEN（需实名认证才能发）
+支持三个通道（任一配置即可，按 邮件 → Server酱 → PushPlus 顺序尝试）：
+  · 邮件（QQ SMTP，免费）：MAIL_USER / MAIL_PASS（授权码）/ MAIL_TO
+  · Server酱 Turbo（微信，免实名，免费 5 条/天）：SCT_SENDKEY
+  · PushPlus（微信，需实名）：PUSHPLUS_TOKEN
 
 设计红线：
   · 只在 CI 判定 changed=true、完成提交后调用；无变化 / 静默放弃时根本不会跑到本脚本。
@@ -29,6 +30,10 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.header import Header
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PUSH_URL = "http://www.pushplus.plus/send"
@@ -118,15 +123,62 @@ def build_message(kind: str, entries: list[str], commit_subject: str) -> tuple[s
     return title, body
 
 
+def send_mail(title: str, body: str) -> bool:
+    """QQ 邮箱 SMTP 发信（免费）。授权码只从环境变量读，绝不入库。"""
+    user = os.environ.get("MAIL_USER", "").strip()
+    pwd = os.environ.get("MAIL_PASS", "").strip()
+    to = os.environ.get("MAIL_TO", "").strip() or user
+    if not (user and pwd and to):
+        print("[notify] 邮件通道未配置完整（MAIL_USER/MAIL_PASS/MAIL_TO），跳过")
+        return False
+    # 正文 markdown 的 **x** 转 <b>x</b>，换行转 <br>，适配邮件 HTML
+    import html as _html
+    rich = _html.escape(body).replace("**", "").replace("\n", "<br>")
+    # 粗体还原：把被 ** 包住的名字重新加粗（转义后仍成对出现的位置已丢，简单按行首 - 处理）
+    lines = []
+    for ln in rich.split("<br>"):
+        if ln.startswith("- "):
+            lines.append(f"<div style='margin:4px 0'>{ln}</div>")
+        else:
+            lines.append(ln)
+    html_body = (
+        "<div style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;"
+        "line-height:1.7;color:#222'>"
+        + "<br>".join(lines)
+        + "<hr style='border:none;border-top:1px solid #eee;margin:16px 0'>"
+        "<span style='color:#888;font-size:12px'>本邮件由蚝历数据入库通知自动发出</span></div>"
+    )
+    msg = MIMEText(html_body, "html", "utf-8")
+    msg["Subject"] = Header(title, "utf-8")
+    msg["From"] = user
+    msg["To"] = to
+    try:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.qq.com", 465, context=ctx, timeout=25) as s:
+            s.login(user, pwd)
+            s.sendmail(user, [to], msg.as_string())
+        print(f"[notify] 邮件已发送 → {to}")
+        return True
+    except Exception as e:
+        print(f"[notify] 邮件发送失败（已忽略）：{e}")
+        return False
+
+
 def send(title: str, body: str) -> bool:
-    """优先 Server酱（免实名），其次 PushPlus；任一成功即返回 True。"""
+    """邮件优先；再 Server酱（免实名）；最后 PushPlus（需实名）。任一成功即止。"""
     sct = os.environ.get("SCT_SENDKEY", "").strip()
     pushplus = os.environ.get("PUSHPLUS_TOKEN", "").strip()
-    if not sct and not pushplus:
-        print("[notify] 未配置 SCT_SENDKEY / PUSHPLUS_TOKEN，跳过推送（不影响入库）")
+    mail_ready = bool(os.environ.get("MAIL_USER", "").strip()
+                      and os.environ.get("MAIL_PASS", "").strip())
+    if not (mail_ready or sct or pushplus):
+        print("[notify] 未配置任何通道（邮件/Server酱/PushPlus），跳过推送（不影响入库）")
         return False
 
     ok_any = False
+    # 邮件（QQ SMTP，免费）
+    if mail_ready and not ok_any:
+        ok_any = send_mail(title, body)
+
     # Server酱 Turbo：form 编码 title/desp，返回 code==0 为成功
     if sct:
         data = urllib.parse.urlencode({"title": title, "desp": body}).encode("utf-8")
