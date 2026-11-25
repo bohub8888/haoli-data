@@ -233,10 +233,6 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只核对，不改动")
     args = ap.parse_args()
 
-    sig = os.path.join(HERE, ".auto_update_changed")
-    if os.path.exists(sig):
-        os.remove(sig)
-
     report = audit()
     changed, problems = has_real_change(report)
     if not changed:
@@ -291,38 +287,17 @@ def main() -> int:
     if os.path.exists(bak):
         os.remove(bak)
 
-    # 重建 + 全量校验（data 仓自包含的构建链）
-    log("开始重建（build.py）...")
-    r = run(f'"{VENV_PY}" build.py', check=False)
+    # 重建 + 全量校验（复用 pipeline，经过验证的构建链）
+    log("开始重建 + 校验（pipeline.py build）...")
+    r = run(f'"{VENV_PY}" pipeline.py build', check=False)
     log((r.stdout or "").splitlines()[-1] if r.stdout else "build 无输出")
     if r.returncode != 0:
-        log("✗ 构建失败，回滚源表")
+        log("✗ 构建/校验失败，回滚源表")
         rollback()
         return 1
 
-    log("开始全量校验...")
-    checks = ["check_consistency.py", "check_key_dates.py", "check_translations.py"]
-    for script in checks:
-        rr = run(f'"{VENV_PY}" {script}', check=False)
-        log(f"  {script}: {'OK' if rr.returncode == 0 else 'FAIL'}")
-        if rr.returncode != 0:
-            log(f"✗ 校验 {script} 失败，回滚源表")
-            rollback()
-            return 1
-    for mod in ("test_official_notice", "test_build_state"):
-        rr = run(f'"{VENV_PY}" -m unittest {mod}', check=False)
-        log(f"  {mod}: {'OK' if rr.returncode == 0 else 'FAIL'}")
-        if rr.returncode != 0:
-            log(f"✗ 单测 {mod} 失败，回滚源表")
-            rollback()
-            return 1
-
-    # 写变化信号：CI 据此决定是否分发（git diff 找具体文件）
-    sig = os.path.join(HERE, ".auto_update_changed")
-    with open(sig, "w", encoding="utf-8") as f:
-        f.write(dt.datetime.now().astimezone().isoformat(timespec="seconds"))
     log("✓ 自动更新完成：源表已改、数据已重建、全量校验通过")
-    log("→ 分发交给 CI workflow（ci_publish.py）")
+    log("→ 分发交给调用方：pipeline.py publish-data --yes（或 CI workflow）")
     return 0
 
 

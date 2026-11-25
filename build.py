@@ -42,6 +42,10 @@ import shortnames  # noqa: E402  卡片展示短名（v1.55 双栏流水卡用�
 import build_state  # noqa: E402  v1.67 版本自动推导 + 幂等写入
 import site_config  # noqa: E402  v1.67 站点地址单一配置点
 
+# v1.71：显示名剥「地区 · 」前缀，剥谁只认国别中文名单（防误伤马丁·路德·金这类
+# 名字本身带间隔号的条目）。
+tax.register_areas({zh for _c, _k, zh, _rg, _n in i18n.COUNTRIES})
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 UID_DOMAIN = "haoli"
 # 生成时刻（UTC）。订阅端靠 DTSTAMP 判断「这份日历里的这条变过没有」，
@@ -150,7 +154,8 @@ def write_ics(path: str, cal_name: str, events: list[Ev], prefix: str, year: int
             f"DTSTAMP:{DTSTAMP}",
             f"DTSTART;VALUE=DATE:{e.start:%Y%m%d}",
             f"DTEND;VALUE=DATE:{e.end:%Y%m%d}",
-            f"SUMMARY:{esc(e.summary)}",
+            # v1.71：ICS 标题同样用裸名；UID 仍按原始名哈希，订阅端不漂移
+            f"SUMMARY:{esc(tax.display_name(e.summary))}",
         ]
         if e.desc:
             lines.append(f"DESCRIPTION:{esc(e.desc)}")
@@ -233,7 +238,7 @@ def build_china(y: int) -> list[Ev]:
         evs.append(one(d, name, "周末调休上班。"))
 
     for d, term in solar_terms(y):
-        evs.append(one(d, f"节气 · {term}"))
+        evs.append(one(d, f"{term}节气"))  # v1.70：全称「小雪节气」，去掉占两列的「节气 · 」前缀
 
     idx = lunar_days(y)
     for key, name in CN_LUNAR_FEST.items():
@@ -548,7 +553,7 @@ def china_nodes(y: int) -> list[tuple]:
     """
     out: list[tuple] = []
     for d, term in solar_terms(y):
-        out.append((d, "中国", f"节气:{term}", f"节气 · {term}", False, False))
+        out.append((d, "中国", f"节气:{term}", f"{term}节气", False, False))  # v1.70 同上
     idx = lunar_days(y)
     for key, name in CN_LUNAR_FEST.items():
         base = name.split("（")[0]
@@ -854,23 +859,21 @@ def build_year(y: int) -> tuple[dict, dict]:
     # v1.49：会议层不走 classify（它会把「会议」误当成外国地区前缀），
     # 按策展库精确匹配直接挂 C5 / conference 元数据，来源等级沿用每条核源结果。
     conf_index = {conferences.display(c): c for c in conf_rows}
-    def region_of(name: str) -> int:
-        """地域档位：中国 0 / 国际 1 / 其他 2。与 App WidgetRender.regionRank 同规则。"""
-        head, body = "", name
-        if "·" in name:
-            parts = name.split("·", 1)
-            head, body = parts[0].strip(), parts[1]
-        if head in ("会议", "展会"):
+    def geo_rank(m: dict, name: str) -> int:
+        """地域档位：中国 0 / 国际 1 / 其他 2（网站月视图 g 字段排序用）。
+
+        v1.71 显示名去前缀后，字符串里不再有「中国 · 」可解析，改由 meta.scope
+        推：cn / cn-region→0、world→1、foreign→2。会议/展会仍写成「会议 · 」
+        形式（App isActivityName 依赖），沿用名称里的地域线索粗分三档。
+        """
+        if m["kind"] == "conference":
+            body = name.split(" · ", 1)[1] if " · " in name else name
             if any(k in body for k in ("中国", "全国", "两会", "政协", "人大", "博鳌")):
                 return 0
             if any(k in body for k in ("世界", "国际", "全球")):
                 return 1
             return 2
-        if head.startswith("中国"):
-            return 0
-        if head == "国际":
-            return 1
-        return 2
+        return {"cn": 0, "cn-region": 0, "world": 1}.get(m["scope"], 2)
 
     records: list[dict] = []
     day_notes: dict[str, dict] = {}       # v1.66：widget_name 全名 → 解释 + 官方来源
@@ -888,7 +891,10 @@ def build_year(y: int) -> tuple[dict, dict]:
         records.append({"d": r["d"], "name": t, "meta": m})
         # v1.66：地域档位与词条解释都按「App 实际看到的全名」索引，两端严格同源。
         wn = tax.widget_name(t, m)
-        r["g"] = region_of(wn)
+        r["g"] = geo_rank(m, t)
+        # v1.73：网站当天列表也要显示分类。从两列全名拆出类别列（中国/国际/
+        # N 国/会议/展会/国名…），与 App splitEntries 同源；名称列仍走裸名。
+        r["c"] = wn.split(" · ", 1)[0] if " · " in wn else ""
         if r.get("x") or r.get("u"):
             note = {}
             if r.get("x"):
@@ -897,8 +903,19 @@ def build_year(y: int) -> tuple[dict, dict]:
                 note["u"] = r["u"]
             day_notes[wn] = note
     # v1.66：元数据算完再落盘（每行带 g），官网月视图排序与 App 严格同源。
+    # v1.71：网站显示名剥「地区 · 」前缀，与小组件 / 全量池同口径（g 档位不变）
+    site_rows = []
+    for r in day_rows:
+        row = {"d": r["d"], "t": tax.display_name(r["t"]), "g": r["g"]}
+        if r.get("c"):
+            row["c"] = r["c"]   # v1.73：分类列（中国/国际/N国/会议/展会/国名…）
+        if r.get("x"):
+            row["x"] = r["x"]
+        if r.get("u"):
+            row["u"] = r["u"]
+        site_rows.append(row)
     with open(os.path.join(year_dir(y), "events.json"), "w", encoding="utf-8") as f:
-        json.dump(day_rows, f, ensure_ascii=False, separators=(",", ":"))
+        json.dump(site_rows, f, ensure_ascii=False, separators=(",", ":"))
 
     # 硬闸门：来源/等级/渠道缺失、中国池被红线误伤、策展与会议条目没过准入，一律构建失败。
     errs = tax.validate(records) + curated.validate() + conferences.validate()
@@ -933,13 +950,13 @@ def build_year(y: int) -> tuple[dict, dict]:
         # v2.1：数据层是唯一事实源——S9 行业旗舰层（CES / 展会 / 行业论坛 / IMF 年会等）
         # 同样入 all / widget 池。有数据就展现，有几条就是几条；展现层不做二次删减。
         bucket = all_days.setdefault(k, [])
-        # v1.64 回归修复：全量池也要带「分类 · 名称」。v1.60 曾直接手改过产物
-        # JSON 补齐分类，却没改生成逻辑，导致任何一次重跑都会把「国际 / 民俗 /
-        # N 国」前缀冲掉，App 的 splitEntries 拆两列时左列全空。
-        # 现在与小组件池同源走 widget_name()（已带「·」的名字原样返回）。
+        # v1.71：显示名 = 裸名（剥「地区 · 」前缀）。排序信息（活动垫底、
+        # 中国→国际→其他）改由 meta 推导，序列化前统一排序——App 的
+        # regionRank 对裸名全落第 2 档、稳定排序保持数据原序，两端同序。
         wn_all = tax.widget_name(t, m)
-        if wn_all not in bucket:
-            bucket.append(wn_all)
+        bkey = (1 if m["kind"] == "conference" else 0, geo_rank(m, t), wn_all)
+        if wn_all not in [x[2] for x in bucket]:
+            bucket.append(bkey)
         if not is_adj(t):
             real_all.add(k)
         # v18：小组件恢复「方案一 = 全球」，与 all 同源；只把调休补假排除
@@ -951,16 +968,20 @@ def build_year(y: int) -> tuple[dict, dict]:
             weight = tax.KIND_ORDER.index(m["kind"]) if m["kind"] in tax.KIND_ORDER else 99
             wb = widget_tmp.setdefault(k, [])
             wn = tax.widget_name(t, m)
-            if wn not in [x[1] for x in wb]:
-                wb.append((weight, wn))
+            if wn not in [x[3] for x in wb]:
+                wb.append((1 if m["kind"] == "conference" else 0,
+                           geo_rank(m, t), weight, wn))
+        dn = tax.display_name(t)   # v1.71：依据页显示名与小组件同口径
         md = meta_days.setdefault(k, [])
-        if not any(x["n"] == t for x in md):
-            md.append({"n": t, "k": m["kind"], "s": m["scope"], "c": m["channel"],
+        if not any(x["n"] == dn for x in md):
+            md.append({"n": dn, "k": m["kind"], "s": m["scope"], "c": m["channel"],
                        "l": m["level"], "src": m["source"], "u": m["url"],
                        "v": m["verified"]})
 
-    widget_days = {k: [n for _w, n in sorted(items, key=lambda x: (x[0], x[1]))]
+    widget_days = {k: [x[3] for x in sorted(items, key=lambda x: (x[0], x[1], x[2], x[3]))]
                    for k, items in widget_tmp.items()}
+    # v1.71：全量池同口径排序（活动垫底 → 中国 → 国际 → 其他，组内按名）
+    all_days = {k2: [x[2] for x in sorted(v2)] for k2, v2 in all_days.items()}
 
     def payload(scope: str, days: dict[str, list[str]], notes=None) -> str:
         obj = {"year": y, "v": VER, "scope": scope,
@@ -1269,8 +1290,8 @@ def render_site(all_stats: dict[int, dict], metas: dict) -> None:
     for key, n in stats.items():
         tpl = tpl.replace("{{N:%s}}" % key, str(n))
 
-    icp = os.environ.get("ICP", "").strip()
-    tpl = tpl.replace("{{ICP}}", f' · <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener nofollow">{icp}</a>' if icp else "")
+    icp = os.environ.get("ICP", "京ICP备2026079812号").strip()
+    tpl = tpl.replace("{{ICP}}", f' · <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener nofollow">{icp}</a> · <a href="https://beian.mps.gov.cn/#/query/webSearch?code=11010202011560" target="_blank" rel="noopener nofollow">京公网安备11010202011560号</a>' if icp else "")
 
     left = set(re.findall(r"\{\{[^}]+\}\}", tpl))
     if left:
@@ -1396,14 +1417,28 @@ def write_root_files() -> None:
     site = site_config.SITE_ORIGIN
     with open(os.path.join(BASE, "robots.txt"), "w", encoding="utf-8") as f:
         f.write("User-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n" % site)
-    # 单页常青：只收录首页；/{year}/ 是跳转页，不再进 sitemap
+    # 主 sitemap：首页 + 长尾指南页 + 蚝历故事文章。
+    # 长尾页与文章由 gen_guide_pages.py / gen_story_pages.py 各自产出子 sitemap，
+    # 这里合并进主 sitemap，让搜索引擎从一个入口发现全站（原先只有首页，是流量瓶颈）。
+    # 子 sitemap 不存在时自动跳过，保持幂等。
+    import re as _re
+    entries = [(f"{site}/", "monthly", "1.0")]
+    for sub, freq, prio in (
+        ("../guide-pages/sitemap-guide.xml", "yearly", "0.7"),
+        ("../story-pages/sitemap-story.xml", "monthly", "0.6"),
+    ):
+        sub_path = os.path.join(BASE, sub)
+        if os.path.exists(sub_path):
+            text = open(sub_path, encoding="utf-8").read()
+            for loc in _re.findall(r"<loc>(.*?)</loc>", text):
+                if loc not in {e[0] for e in entries}:
+                    entries.append((loc, freq, prio))
     with open(os.path.join(BASE, "sitemap.xml"), "w", encoding="utf-8") as f:
-        f.write(
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-            f"  <url><loc>{site}/</loc><changefreq>monthly</changefreq><priority>1.0</priority></url>\n"
-            "</urlset>\n"
-        )
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n')
+        for loc, cf, pr in entries:
+            f.write(f"  <url><loc>{loc}</loc><changefreq>{cf}</changefreq><priority>{pr}</priority></url>\n")
+        f.write("</urlset>\n")
 
 
 def update_all_manifest(years: list[int]) -> None:

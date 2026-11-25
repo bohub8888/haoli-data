@@ -250,6 +250,38 @@ def banned(name: str, strict: bool = True) -> str | None:
 
 _AREA_PREFIX = re.compile(r"^([^\s·（(]+?)\s*·\s*(.+)$")
 
+# ---------------------------------------------------------------- v1.71 显示名剥前缀
+# 用户定稿 2026-11-20：显示名一律裸名，不带「地区 · 」「N 国 · 」等前缀
+# （前缀 + 间隔号占了小组件 / 网站一大块宽度，核心节日名反而显示不全）。
+AREA_HEADS = {"中国", "中国香港", "中国澳门", "中国台湾", "国际",
+              "会议", "展会", "天象", "宗教", "全球宗教"}
+_NATION_HEAD = re.compile(r"^(\d+\s*国(?:家/地区)?)\s*·\s*(.+)$")
+# 名字本身的间隔号（马丁·路德·金）转全角「・」：App splitEntries 按 U+00B7
+# 拆两列，裸名里再出现半角间隔号会被误拆成「分类=马丁」。
+_INNER_DOT = str.maketrans({"·": "・"})
+
+
+def register_areas(names) -> None:
+    """build.py 把 i18n 国别中文名注册进来，剥前缀只认这份名单，防误伤。"""
+    AREA_HEADS.update(names)
+
+
+def display_name(t: str) -> str:
+    """对外显示名：剥「地区 · 」前缀与「（N 国）」合并尾巴，返回裸名。"""
+    t = t.strip()
+    head, rest = "", t
+    pm = _AREA_PREFIX.match(t)
+    if pm and pm.group(1) in AREA_HEADS:
+        head, rest = pm.group(1), pm.group(2).strip()
+    else:
+        nm = _NATION_HEAD.match(t)
+        if nm:
+            rest = nm.group(2).strip()
+    # v1.72 用户定稿：会议/展会的「会议 · 」「展会 · 」也是类别头，单列展示端
+    # 一律剥掉——名称就是名称（广交会就显示「广交会」）。类别信息在小组件
+    # 两列格式（widget_name）与 meta 的 kind 字段里。
+    return _merge_tail_strip(rest.translate(_INNER_DOT))
+
 
 def classify(name: str, *, obs_index: dict, country_names: set[str],
              lunar_names: set[str], term_names: set[str],
@@ -289,7 +321,10 @@ def classify(name: str, *, obs_index: dict, country_names: set[str],
     # 3) 24 节气 / 农历传统节日（只对内地条目生效）。
     #    「中国澳门 · 冬至」是澳门公众假期，不能因为名字撞上节气就标成节气，
     #    否则会和同日「中国 · 节气 · 冬至」在小组件里去重成一条。
-    if area in ("", "中国", "节气") and (core in term_names or t.startswith("节气 · ")):
+    if area in ("", "中国", "节气") and (
+            core in term_names
+            or t.startswith("节气 · ")  # 旧写法兼容
+            or (core.endswith("节气") and core[:-2] in term_names)):  # v1.70「小雪节气」
         return m("solar_term", "cn", "C1", "cnlunar 二十四节气算法")
     if area in ("", "中国") and core in lunar_names:
         return m("traditional", "cn", "C1", "cnlunar 农历 + 中国传统节日表")
@@ -346,23 +381,29 @@ def bare_name(name: str) -> str:
 
 
 def widget_name(name: str, m: dict) -> str:
-    """小组件「分类 · 名称」两列写法（App 的 splitEntries 按第一个「·」拆两列）。
+    """小组件 / App 数据的两列传输格式「类别 · 名称」（v1.72 用户定稿 2026-11-20）。
 
-    v18：原样返回「地区 · 名称」，国别即分类。
-    v1.60（用户：「国际类的节日没有分类，是否应该加国际这个分类？」）：
-    原来 28.5% 的条目没有「·」——世界日 / 国际日 / 多国合并 / 宗教 / 民俗 /
-    天象全是空分类，混排时一列有字一列空。数据层本来就带 scope=world，
-    这里按**纯名称规则**补齐分类（不依赖 meta，离线也能重算）：
-      · 世界日 / 国际日 / UN 主题日   → 「国际」
-      · 多国合并「（N 个国家/地区）」  → 「N 国」（国数搬进分类，名字去掉括号尾巴）
-      · 宗教节日                      → 「宗教」
-      · 民俗节日                      → 「民俗」
-      · 流星雨 / 日月食               → 「天象」
-      · 名字自带国名（法国国庆…）      → 还原成「法国 · 国庆」
+    用户模型：数据里名称与类别是两列，就像姓与名——展示时名称列只显示
+    名称、类别列只显示类别，名称永远不带类别。App 的 splitEntries 按第一
+    个「·」拆开：左列小字=类别（中国/国际/N 国/民俗/宗教/天象/会议/展会/
+    国名），右列=纯名称；FlowCard 查 short.json 用的就是右列裸名键。
+    「会议 · 」「展会 · 」在数据里也回归类别列语义，展示端名称列同样干净，
+    App 的 isActivityName / nounOf 逻辑不受影响（无需发 APK）。
+
+    单列展示端（网站 events.json / ICS SUMMARY / meta 依据页）不用本函数，
+    用 display_name()（裸名）。
     """
     t = name.strip()
+    if t.startswith("节气 · "):
+        # 旧写法「节气 · 小雪」→ 两列「中国 · 小雪节气」（节气是中国独有）
+        return "中国 · " + t[len("节气 · "):].strip() + "节气"
+    bare = display_name(t)
+    if bare.endswith("节气") and len(bare) == 4:
+        # 名称仍是「小雪节气」四字（用户 v1.70 定稿），但必须补回类别列「中国」：
+        # 两列模型要求每条都有分类，节气是二十四节气、中国独有，分类就是中国。
+        return "中国 · " + bare
     if " · " in t:
-        return t
+        return t          # 原名自带类别头（中国/国际/会议/国名…），原样即两列
     split = widget_cat(t)
     return f"{split[0]} · {split[1]}" if split else t
 
@@ -407,6 +448,10 @@ def widget_cat(t: str) -> tuple[str, str] | None:
         return ("宗教", t)
     if t in _FOLK_NAMES:
         return ("民俗", t)
+    # 节气（「小雪节气」式）是中国独有，分类必须是「中国」，不能落国际兜底。
+    # 名称仍为「小雪节气」四字，类别列单独填「中国」。
+    if t.endswith("节气") and len(t) == 4:
+        return ("中国", t)
     # 其余无国别条目 = 世界 / 国际 / UN 主题日
     return ("国际", t)
 

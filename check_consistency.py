@@ -13,10 +13,11 @@
   3  中国日历 → Apk 数据：节点集合（日期 + 归一化名称）双向相等
   4  权重一致：Apk 里的 w 与源表口径相同
   5  全球日历包含中国：法定假期、24 节气、农历节日一条不漏
-  6  stats.json 的计数与实际文件条目数一致
-  7  ICS 结构：CRLF、VEVENT 配对、每行 ≤75 字节、UID 不重复
-  8  远程更新包：manifest 的 sha256 / 版本号与实际文件一致
-  9  页面：每个 {{N:key}} 占位都已替换、计数与 stats 相同
+  6  会议全端一致：conferences 每条都在全球 ICS / all-*.json / widget-*.json 出现
+  7  stats.json 的计数与实际文件条目数一致
+  8  ICS 结构：CRLF、VEVENT 配对、每行 ≤75 字节、UID 不重复
+  9  远程更新包：manifest 的 sha256 / 版本号与实际文件一致
+  10 页面：每个 {{N:key}} 占位都已替换、计数与 stats 相同
 
 用法：
     .venv/bin/python holiday-calendar-deploy/check_consistency.py
@@ -36,13 +37,12 @@ import sys
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
 APK_DATA = os.path.join(ROOT, "haoli-apk", "app", "src", "main", "assets", "data")
-# 数据仓 CI 环境只有本仓、不含 haoli-apk 工程（本流水线明确不发 APK）。
-# APK 内置数据一致性属发 APK 时的本地校验；无 APK 目录时跳过，避免误判为不一致。
-HAS_APK = os.path.isdir(APK_DATA)
 
 sys.path.insert(0, BASE)
 import observances as obs  # noqa: E402
 import curated  # noqa: E402  中国官方纪念日策展库（C3 渠道的独立合法来源）
+import conferences  # noqa: E402  世界级 / 国家级会议策展库（全端一致校验）
+import taxonomy as tax  # noqa: E402  v1.72 显示名归一（ICS 裸名 vs 数据两列）
 
 CURATED = {c["name"]: c["mmdd"] for c in curated.ENTRIES}
 
@@ -78,17 +78,22 @@ def parse_ics(path: str) -> list[dict]:
 
 def ics_terms(year: int) -> list[tuple[dt.date, str]]:
     path = os.path.join(BASE, str(year), "ics", f"china-{year}.ics")
-    return [
-        (e["d"], e["s"][len("节气 · "):])
-        for e in parse_ics(path)
-        if e["s"].startswith("节气 · ")
-    ]
+    out = []
+    for e in parse_ics(path):
+        s = e["s"]
+        if s.startswith("节气 · "):            # 旧写法兼容
+            out.append((e["d"], s[len("节气 · "):]))
+        elif s.endswith("节气") and len(s) == 4:   # v1.70「小雪节气」
+            out.append((e["d"], s[:-2]))
+    return out
 
 
 def norm(s: str) -> str:
     """ics 摘要 → Apk 节点名。两侧写法不同，但语义相同。"""
     if s.startswith("节气 · "):
         return s[len("节气 · "):]
+    if s.endswith("节气") and len(s) == 4:
+        return s[:-2]   # v1.70「小雪节气」→「小雪」（与 Apk 算法节点裸名对齐）
     if s.startswith("调休上班"):
         return "调休上班"
     if s.endswith("假期"):
@@ -115,7 +120,8 @@ def check_table_vs_china(y: int, china: list[dict]) -> None:
     table = {(o.date, o.name) for o in rows}
     for e in china:
         s = e["s"]
-        if s.startswith(("节气 · ", "调休上班")) or s.endswith("假期") or "（" in s:
+        if s.startswith(("节气 · ", "调休上班")) or (s.endswith("节气") and len(s) == 4) \
+            or s.endswith("假期") or "（" in s:
             continue
         if s in ("除夕",):
             continue
@@ -140,8 +146,6 @@ def check_table_vs_global(y: int, glob: list[dict]) -> None:
 
 
 def check_china_vs_apk(y: int, china: list[dict]) -> None:
-    if not HAS_APK:
-        return   # 数据仓 CI 无 APK 工程，跳过（发 APK 的本地环境仍严格校验）
     path = os.path.join(APK_DATA, f"cn-{y}.json")
     if not os.path.exists(path):
         bad(f"[{y}] 缺 Apk 数据 {path}")
@@ -181,8 +185,6 @@ def check_global_contains_china(y: int, glob: list[dict], china: list[dict]) -> 
 
 def check_algo_years(years=(2028, 2029, 2030)) -> None:
     """2028 年起没有国务院公告，Apk 只用算法数据；源表照样要全部落地。"""
-    if not HAS_APK:
-        return   # 数据仓 CI 无 APK 工程，跳过（发 APK 的本地环境仍严格校验）
     import cnlunar  # 局部导入：只有这条检查需要
 
     for y in years:
@@ -202,6 +204,36 @@ def check_algo_years(years=(2028, 2029, 2030)) -> None:
         for o in obs.solar_of(y, terms):
             if (o.date, o.name) not in nodes:
                 bad(f"[{y}] 算法年份缺源表条目：{o.date} {o.name}")
+
+
+def check_conferences_all_endpoints(y: int, glob: list[dict]) -> None:
+    """全端一致（用户 2026-11-19 定档）：会议条目必须在所有端同时出现。
+
+    conferences.py 里的每条，必须同时落地在：全球 ICS、all-*.json、widget-*.json。
+    准入闸门是唯一门槛，通过即全端展示；展现层不做二次删减。
+    任一端缺失即报错——防止「网页有、小组件无」这类不一致再次发生。
+    """
+    import json as _json
+    rows = conferences.for_year(y)
+    if not rows:
+        return
+    glob_names = {e["s"] for e in glob}
+    all_path = os.path.join(BASE, "data", f"all-{y}.json")
+    widget_path = os.path.join(BASE, "data", f"widget-{y}.json")
+    # v1.72：ICS SUMMARY 用裸名（display_name 剥「会议 · 」类别头），all/widget
+    # 数据用两列「会议 · 名称」。比对各用各的口径。
+    for label, path in (("all", all_path), ("widget", widget_path)):
+        if not os.path.exists(path):
+            bad(f"会议全端一致：缺 {label}-{y}.json")
+            continue
+        days = _json.load(open(path, encoding="utf-8")).get("days", {})
+        pool = {n for names in days.values() for n in names}
+        for c in rows:
+            shown = conferences.display(c)
+            if tax.display_name(shown) not in glob_names:
+                bad(f"会议全端一致：{shown} 缺全球 ICS")
+            if shown not in pool:
+                bad(f"会议全端一致：{shown} 缺 {label}-{y}.json")
 
 
 def check_stats(y: int) -> None:
@@ -284,6 +316,7 @@ def main() -> int:
         check_table_vs_global(y, glob)
         check_china_vs_apk(y, china)
         check_global_contains_china(y, glob, china)
+        check_conferences_all_endpoints(y, glob)
         check_stats(y)
         check_ics_struct(y)
         check_pages(y)
