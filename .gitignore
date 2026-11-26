@@ -2,3 +2,12 @@
 __pycache__/
 .DS_Store
 
+
+# 生成产物 / 本地状态（不进开源仓；CI 里 build 会现场生成）
+/index.html
+/sitemap.xml
+/robots.txt
+/20??/index.html
+data/build-state.json
+data/discovery-cache/
+data/conference-watch-cache/
