@@ -860,20 +860,28 @@ def build_year(y: int) -> tuple[dict, dict]:
     # 按策展库精确匹配直接挂 C5 / conference 元数据，来源等级沿用每条核源结果。
     conf_index = {conferences.display(c): c for c in conf_rows}
     def geo_rank(m: dict, name: str) -> int:
-        """地域档位：中国 0 / 国际 1 / 其他 2（网站月视图 g 字段排序用）。
+        """地域档位：中国 0 / 美国 1 / 国际 2 / 其他 3（网站月视图 g 字段排序用）。
 
-        v1.71 显示名去前缀后，字符串里不再有「中国 · 」可解析，改由 meta.scope
-        推：cn / cn-region→0、world→1、foreign→2。会议/展会仍写成「会议 · 」
-        形式（App isActivityName 依赖），沿用名称里的地域线索粗分三档。
+        v1.75 档位调整（用户 2026-11-26 定）：中国仍最高，美国提前到第二档，
+        世界（国际日/宗教/天象）第三，其他国家第四。v1.71 显示名去前缀后，
+        字符串里不再有「中国 · 」可解析，改由 meta.scope 推：cn / cn-region→0、
+        world→2、foreign→3；美国按名称前缀「美国」识别（holidays 库地区名唯一，
+        不会撞车）。会议/展会仍写成「会议 · 」形式（App isActivityName 依赖），
+        沿用名称里的地域线索分同口径四档。
         """
         if m["kind"] == "conference":
             body = name.split(" · ", 1)[1] if " · " in name else name
             if any(k in body for k in ("中国", "全国", "两会", "政协", "人大", "博鳌")):
                 return 0
             if any(k in body for k in ("世界", "国际", "全球")):
-                return 1
-            return 2
-        return {"cn": 0, "cn-region": 0, "world": 1}.get(m["scope"], 2)
+                return 2
+            return 3
+        head = name.split(" · ", 1)[0].strip()
+        if head.startswith("中国"):   # 中国内地 + 中国港澳台
+            return 0
+        if head == "美国":
+            return 1
+        return {"cn": 0, "cn-region": 0, "world": 2}.get(m["scope"], 3)
 
     records: list[dict] = []
     day_notes: dict[str, dict] = {}       # v1.66：widget_name 全名 → 解释 + 官方来源
@@ -951,7 +959,7 @@ def build_year(y: int) -> tuple[dict, dict]:
         # 同样入 all / widget 池。有数据就展现，有几条就是几条；展现层不做二次删减。
         bucket = all_days.setdefault(k, [])
         # v1.71：显示名 = 裸名（剥「地区 · 」前缀）。排序信息（活动垫底、
-        # 中国→国际→其他）改由 meta 推导，序列化前统一排序——App 的
+        # 中国→美国→国际→其他）改由 meta 推导，序列化前统一排序——App 的
         # regionRank 对裸名全落第 2 档、稳定排序保持数据原序，两端同序。
         wn_all = tax.widget_name(t, m)
         bkey = (1 if m["kind"] == "conference" else 0, geo_rank(m, t), wn_all)
@@ -980,7 +988,7 @@ def build_year(y: int) -> tuple[dict, dict]:
 
     widget_days = {k: [x[3] for x in sorted(items, key=lambda x: (x[0], x[1], x[2], x[3]))]
                    for k, items in widget_tmp.items()}
-    # v1.71：全量池同口径排序（活动垫底 → 中国 → 国际 → 其他，组内按名）
+    # v1.71：全量池同口径排序（活动垫底 → 中国 → 美国 → 国际 → 其他，组内按名）
     all_days = {k2: [x[2] for x in sorted(v2)] for k2, v2 in all_days.items()}
 
     def payload(scope: str, days: dict[str, list[str]], notes=None) -> str:
