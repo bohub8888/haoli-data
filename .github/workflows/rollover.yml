@@ -1,0 +1,122 @@
+name: 月度窗口校准与跨年重建
+
+# 目的：把「跨年」这件事也搬到云端，彻底不依赖任何本地设备。
+#
+# 为什么是每月 1 日跑一次（而不是只在 1 月 1 日）：
+#   · 窗口 = 今年 + 明年（明年要有国办放假安排才纳入）。国办通常在 11 月发布
+#     次年安排，CI 抓到公告后 auto_update 会自动重建数据，但站点页面的
+#     「2026–2027」文案和月视图年份数组不在数据里，需要这里改；
+#   · 1 月 1 日窗口收缩（旧年出局），同样需要重建 + 改文案；
+#   · 每月跑一次成本极低，且只在真的需要时构建/分发（见 gate 步骤）。
+on:
+  schedule:
+    - cron: "0 1 1 * *"    # 每月 1 日 09:00 北京时间
+  workflow_dispatch:        # 手动触发（调试 / 紧急校准）
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-update
+  cancel-in-progress: false
+
+jobs:
+  rollover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SITE: https://oyster111.top
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 还原受限 SSH 私钥
+        env:
+          HAOLI_DEPLOY_KEY: ${{ secrets.HAOLI_DEPLOY_KEY }}
+        run: |
+          if [ -n "$HAOLI_DEPLOY_KEY" ]; then
+            printf '%s\n' "$HAOLI_DEPLOY_KEY" > "$RUNNER_TEMP/haoli_deploy_key"
+            chmod 600 "$RUNNER_TEMP/haoli_deploy_key"
+            echo "HAOLI_DEPLOY_KEY_FILE=$RUNNER_TEMP/haoli_deploy_key" >> "$GITHUB_ENV"
+          else
+            echo "::warning::HAOLI_DEPLOY_KEY 未配置，将跳过服务器同步"
+          fi
+
+      - name: 判断窗口是否需要重建
+        id: gate
+        run: |
+          python - <<'PY'
+          import datetime as dt, json, os, re, sys
+          sys.path.insert(0, ".")
+          from cn_official import CN_OFFICIAL
+
+          today = dt.date.today().year
+          # 期望窗口：今年 + 明年（明年必须有国办放假安排）
+          want = [today] + ([today + 1] if (today + 1) in CN_OFFICIAL else [])
+          m = json.load(open("data/manifest.json", encoding="utf-8"))
+          have = sorted(int(re.match(r"all-(\d{4})$", k).group(1))
+                        for k in m.get("files", {}) if re.match(r"all-\d{4}$", k))
+          print(f"当前发布窗口 {have} / 期望窗口 {want}")
+          need = "true" if have != want else "false"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"need={need}\n")
+          PY
+
+      - name: 重建数据（仅窗口变化时）
+        if: steps.gate.outputs.need == 'true'
+        run: |
+          python build.py
+          python - <<'PY'
+          import json, re
+          m = json.load(open("data/manifest.json", encoding="utf-8"))
+          years = sorted(int(re.match(r"all-(\d{4})$", k).group(1))
+                         for k in m["files"] if re.match(r"all-\d{4}$", k))
+          print("重建后窗口:", years)
+          assert years, "manifest 里没有 all-YYYY，构建异常"
+          PY
+
+      - name: 分发数据到 haoli-site 仓 + 服务器 + CDN
+        if: steps.gate.outputs.need == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAOLI_SITE_TOKEN: ${{ secrets.HAOLI_SITE_TOKEN }}
+          HAOLI_DEPLOY_KEY_FILE: ${{ env.HAOLI_DEPLOY_KEY_FILE }}
+        run: |
+          FILES=$(git status --porcelain | awk '{print $NF}' \
+                  | grep -E '^(data/|ics/|20[0-9]{2}/|stats\.json)' \
+                  | grep -vE 'apk\.json|build-state\.json|official-notice-report\.json|official-notices/|bjwh\.json' \
+                  | paste -sd, -)
+          echo "变化文件: $FILES"
+          if [ -n "$FILES" ]; then python ci_publish.py --files "$FILES"; fi
+
+      - name: 校准站点年份文案与月视图窗口
+        env:
+          HAOLI_SITE_TOKEN: ${{ secrets.HAOLI_SITE_TOKEN }}
+          HAOLI_DEPLOY_KEY_FILE: ${{ env.HAOLI_DEPLOY_KEY_FILE }}
+        continue-on-error: true
+        run: python ci_rollover_site.py
+
+      - name: 提交数据与源表变化
+        if: steps.gate.outputs.need == 'true'
+        run: |
+          git config user.name "haoli-ci"
+          git config user.email "haoli-ci@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "rollover: 窗口校准重建（全端一致，不发 APK）· $(date +%F)"
+            git push origin main
+          fi
+
+      - name: 留痕
+        if: steps.gate.outputs.need != 'true'
+        run: echo "窗口未变化，仅做了站点文案校准（如无差异则整轮无改动）。"

@@ -61,6 +61,16 @@ D = dt.date
 _TODAY = dt.date.today()
 YEARS = [int(x) for x in os.environ.get(
     "YEARS", f"{_TODAY.year},{_TODAY.year + 1}").split(",") if x.strip()]
+
+# v1.76：缺次年国务院放假安排的年份直接剔除，不再整轮 SystemExit。
+# 原因：跨年（1 月 1 日）窗口自动变成「当年 + 次年」，而次年安排要到当年 11 月
+# 才由国办发布——旧逻辑会让每年 1-11 月的每日构建全部失败。现在只发已发布
+# 安排的年份（当年必须有，否则仍硬失败），次年公告落地后 CI 自动补入。
+_HAVE = [y for y in YEARS if y in CN_OFFICIAL]
+if len(_HAVE) < len(YEARS) and _TODAY.year in _HAVE:
+    print(f"[!] {[y for y in YEARS if y not in CN_OFFICIAL]} 年缺国务院放假安排，本轮跳过（公告发布后自动补入）")
+    YEARS = _HAVE
+
 _VERSIONS = build_state.resolve_versions(BASE, YEARS)
 
 # v1.45：生成期实测报告（红线命中、校验结果、分层条数与空态天数）。
