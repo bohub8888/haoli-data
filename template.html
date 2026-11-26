@@ -556,7 +556,7 @@ document.addEventListener('click', function (e) {
     pairs.forEach(function (pair, i) {
       var y = YEARS[i], rows = pair[0] || [], cn = pair[1];
       (rows || []).forEach(function (r) {
-        (EV[r.d] = EV[r.d] || []).push({ t: r.t, c: r.c || '', x: r.x, u: r.u });
+        (EV[r.d] = EV[r.d] || []).push({ t: r.t, c: r.c || '', g: r.g, x: r.x, u: r.u });  // v1.75：g 必须带上，regionOfEv 主路径就靠它
       });
       var days = (cn && cn.days) || [];
       for (var k = 0; k < days.length; k++) {
