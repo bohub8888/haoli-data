@@ -67,17 +67,22 @@ def built_years() -> list[int]:
 
 
 def patch_html(html: str, years: list[int]) -> tuple[str, int]:
-    old = sorted({(int(a), int(b)) for a, b in
-                  re.findall(r"(20\d{2})[–-](20\d{2})", html)})
+    """只换「窗口」这一种年份对：从 `var YEARS = [...]` 反推旧窗口，
+    精确替换该字符串。绝不碰「内置 2026–2030 五年数据」这类无关区间。
+    """
+    m = re.search(r"var YEARS = \[([^\]]*)\];", html)
+    old_years = [int(x) for x in re.findall(r"20\d{2}", m.group(1))] if m else []
     new_range = "–".join(str(y) for y in years)
     n = 0
-    for a, b in old:
-        for sep in ("–", "-"):
-            src = f"{a}{sep}{b}"
-            if src in html:
-                n += html.count(src)
-                html = html.replace(src, new_range)
-    # 月视图年份窗口
+    if old_years:
+        old_range = "–".join(str(y) for y in old_years)
+        n += html.count(old_range)
+        html = html.replace(old_range, new_range)
+        # 兼容历史写法（ASCII 连字符）
+        old_ascii = "-".join(str(y) for y in old_years)
+        if old_ascii != old_range:
+            n += html.count(old_ascii)
+            html = html.replace(old_ascii, new_range)
     arr = ", ".join(str(y) for y in years)
     html, k = re.subn(r"var YEARS = \[[^\]]*\];", f"var YEARS = [{arr}];", html)
     n += k
