@@ -180,7 +180,8 @@ def send(title: str, body: str) -> bool:
         ok_any = send_mail(title, body)
 
     # Server酱 Turbo：form 编码 title/desp，返回 code==0 为成功
-    if sct:
+    # 已有通道成功就不再发，避免同一条入库通知重复到达；也不能让它的结果覆盖 ok_any
+    if sct and not ok_any:
         data = urllib.parse.urlencode({"title": title, "desp": body}).encode("utf-8")
         req = urllib.request.Request(
             SCT_URL.format(key=sct), data=data,

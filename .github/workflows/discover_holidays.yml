@@ -9,6 +9,12 @@ on:
   schedule:
     - cron: "50 4 * * *"   # 每天 12:50 北京时间
   workflow_dispatch:        # 手动触发（调试用）
+    inputs:
+      test_notify:
+        description: "发一条测试通知，验证邮件/PushPlus 通道（不影响候选发现）"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -37,7 +43,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 解析器单测
-        run: python -m unittest test_discover_days_auto -v
+        run: |
+          python -m unittest test_discover_days_auto -v
+          python notify_discovery.py --self-test
 
       - name: 每天自动发现
         id: discover
@@ -59,13 +67,31 @@ jobs:
               print("::notice::本次无新节日候选（已入库的不重复报，拿不准的静默放弃）")
           PY
 
-      - name: 提交已见基线（仅 UN 列表新增时才会变化）
+      - name: 新候选通知（邮件 → PushPlus，同一候选只通知一次）
+        if: steps.discover.outputs.count != '0' || (github.event_name == 'workflow_dispatch' && inputs.test_notify)
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          SCT_SENDKEY: ${{ secrets.SCT_SENDKEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          if [ "${{ inputs.test_notify }}" = "true" ]; then
+            python notify_discovery.py --test
+          else
+            python notify_discovery.py
+          fi
+
+      - name: 提交已见基线（UN 列表新增 / 已通知候选去重基线）
         run: |
           git config user.name "haoli-ci"
           git config user.email "haoli-ci@users.noreply.github.com"
-          git add data/discovery-seen.json
+          for f in data/discovery-seen.json data/discovery-notified.json; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
           if ! git diff --cached --quiet; then
-            git commit -m "auto: 节日发现基线更新（UN 新增候选）· $(date +%F)"
+            git commit -m "auto: 节日发现基线更新（UN 新增 / 已通知候选）· $(date +%F)"
             git push origin main
           else
             echo "基线无变化，不提交（候选报告为本地产物，不入库）"
